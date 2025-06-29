@@ -1,0 +1,545 @@
+#!/usr/bin/env bash
+set -o errexit -o nounset -o pipefail
+if [[ "${TRACE-0}" == 1 ]]; then set -o xtrace; fi
+# A yt-dlp wrapper optimizing bilibili and netease download usage
+#
+# This software is licensed under BSD Zero Clause OR CC0 v1.0 Universal OR
+# WTFPL Version 2. You may choose any of them at your will.
+#
+# The software is provided "as is" and the author disclaims all warranties with
+# regard to this software including all implied warranties of merchantability
+# and fitness. In no event shall the author be liable for any special, direct,
+# indirect, or consequential damages or any damages whatsoever resulting from
+# loss of use, data or profits, whether in an action of contract, negligence or
+# other tortious action, arising out of or in connection with the use or
+# performance of this software.
+
+_get_stack() {
+    # https://gist.github.com/akostadinov/33bb2606afe1b334169dfbf202991d36
+    local -r stack_size="${#FUNCNAME[@]}"
+    local bt
+    for ((bt = 1; bt < stack_size; bt++)); do
+        local func="${FUNCNAME[$bt]}"
+        [[ $func = "" ]] && func=MAIN
+        local -r linen="${BASH_LINENO[$((bt - 1))]}"
+        local src="${BASH_SOURCE[$bt]}"
+        [[ "$src" = "" ]] && src=non_file_source
+
+        echo "   at: $func() $src (line $linen)"
+    done
+}
+_raise_fatal_error() {
+    local -r message="$1"
+    echo "SCRIPT BUG: $message" >&2
+    _get_stack >&2
+    exit 1
+}
+_assert_no_params() {
+    if [[ "$#" -ne 0 ]]; then
+        _raise_fatal_error "$# more parameters than expected ($*)"
+    fi
+}
+
+is_true() {
+    # Check if a value is true
+    local val="$1"
+    shift
+    _assert_no_params "$@"
+
+    val="${val,,}"
+    [[ "$val" == "true" ]] || [[ "$val" == "yes" ]] || [[ "$val" == "1" ]]
+}
+
+# shellcheck disable=SC2120
+usage() {
+    _assert_no_params "$@"
+    cat <<EOF
+Usage: $(basename "$0") [COMMAND] URL [PATH]
+Commands:
+  -d, --download          (default) Download video or playlist from URL to PATH (default: current directory)
+  -a, --audio             Download audio from URL
+  -v, --update-video      Re-download video file
+  -u, --update-danmaku    Refresh video danmaku
+  -h, --help              Show this help message
+  --                      End of options
+
+Environment variables:
+  YT_DLP_COOKIE           Path to cookies file (default: ~/.local/share/youtube-dl/cookies.txt)
+  YT_DLP_ARGS             Additional arguments to pass to yt-dlp
+  ARIA2_ARGS              Additional arguments to pass to aria2c
+  USE_ARIA2               Use aria2c as external downloader (default: no)
+  AUDIO_ENCODING_PARAMS   Additional arguments to pass to ffmpeg for audio encoding (default: libopus with 128kbps)
+  USE_YUTTO               Use yutto to download danmaku (default: yes)
+  BACKOFF                 Retry backoff time (default: 1s)
+EOF
+}
+
+filesize() {
+    # Print human-readable file size of a file
+    local -r filename="$1"
+    shift
+    _assert_no_params "$@"
+
+    stat -c %s -- "$filename" | numfmt --to=iec
+}
+
+# shellcheck disable=SC2120
+print_with_indent() {
+    # Pipe stdin to stdout with each line indented by 4 spaces
+    _assert_no_params "$@"
+    sed 's/^/    /'
+}
+
+with_retry() {
+    # Retry a command until it succeeds
+    local -r max_attempts="$1"
+    shift
+    local -r backoff="${BACKOFF-"1s"}"
+    local attempt=1
+    while [[ $attempt -le "$max_attempts" ]]; do
+        if "$@"; then return 0; fi
+        attempt=$((attempt + 1))
+        echo "Warning: Retrying in $backoff (attempt $attempt out of $max_attempts)" >&2
+        sleep "$backoff"
+    done
+    return 1
+}
+
+yt_dlp_wrapper() {
+    local -a opts=()
+    if is_true "${USE_ARIA2-no}"; then
+        opts+=("--external-downloader" "aria2c")
+        if [[ -n "${ARIA2_ARGS+x}" ]]; then
+            opts+=("--external-downloader-args" "$ARIA2_ARGS")
+        fi
+    fi
+    if [[ -n "${YT_DLP_COOKIE+x}" ]] && [[ -f "$YT_DLP_COOKIE" ]]; then
+        opts+=("--cookies" "$YT_DLP_COOKIE")
+    fi
+    if [[ -n "${YT_DLP_ARGS+x}" ]]; then
+        read -ra ytdlp_opts <<<"$YT_DLP_ARGS"
+        opts+=("${ytdlp_opts[@]}")
+    fi
+    yt-dlp --quiet --windows-filenames --output "${OUTPUT_FILENAME-%(title).200B%(title.201B&...|)s [%(id)s].%(ext)s}" --progress "${opts[@]}" "$@" 0<&-
+}
+ffmpeg_wrapper() {
+    ffmpeg -hide_banner -loglevel error -nostdin "$@" 0<&-
+}
+ffprobe_wrapper() {
+    ffprobe -hide_banner -loglevel error -v error -print_format json "$@" 0<&-
+}
+
+ytdlp_video() {
+    # Download video from URL using yt-dlp
+    local -r url="$1"
+    local -r output_dir="$2"
+    shift 2
+    _assert_no_params "$@"
+
+    # Do not download danmaku - they will be embedded later
+    local -a yt_dlp_args=("--no-mtime" "--format-sort" "lang,hdr:12,quality,res,fps,vbr,abr" "--prefer-free-formats" "--sub-lang" ".*en.*,.*zh.*,.*cn.*,-danmaku" "--write-subs" "--embed-subs" "--embed-thumbnail" "--embed-chapters" "--embed-info-json" "--remux-video" "mkv" "--concurrent-fragments" "4" "--paths" "$output_dir" "--use-postprocessor" "FFmpegCopyStream" "--postprocessor-args" "CopyStream:$AUDIO_ENCODING_PARAMS -f matroska")
+    # Check if url contains "bilibili.com"
+    if [[ "$url" == *"bilibili.com"* ]]; then
+        # also extract auto-generated subtitles
+        yt_dlp_args+=("--write-auto-subs")
+    fi
+    readonly yt_dlp_args
+
+    yt_dlp_wrapper "${yt_dlp_args[@]}" -- "$url"
+}
+
+ytdlp_audio() {
+    # Download and extract audio from URL using yt-dlp
+    local -r url="$1"
+    local -r output_dir="$2"
+    shift 2
+    _assert_no_params "$@"
+
+    local -a yt_dlp_args=("--no-mtime" "--format" "bestaudio*" "--extract-audio" "--audio-format" "opus" "--prefer-free-formats" "--embed-thumbnail" "--embed-chapters" "--embed-info-json" "--embed-metadata" "--remux-video" "opus" "--concurrent-fragments" "4" "--paths" "$output_dir" "--use-postprocessor" "FFmpegExtractAudio" "--postprocessor-args" "ExtractAudio:$AUDIO_ENCODING_PARAMS")
+    # Check if url contains "music.163.com"
+    if [[ "$url" == *"music.163.com"* ]]; then
+        # extract lyrics from description
+        yt_dlp_args+=("--parse-metadata" "description:(?s)(?P<meta_lyrics>.*)")
+    fi
+    readonly yt_dlp_args
+
+    yt_dlp_wrapper "${yt_dlp_args[@]}" -- "$url"
+}
+
+ytdlp_danmaku() {
+    # Download danmaku from URL using yt-dlp
+    local -r url="$1"
+    local -r output_dir="$2"
+    shift 2
+    _assert_no_params "$@"
+
+    # WORKAROUND: https://github.com/aria2/aria2/issues/1436
+    USE_ARIA2=no yt_dlp_wrapper --write-subs --sub-lang "danmaku" --sub-format "xml" --no-write-auto-subs --skip-download --paths "$output_dir" -- "$url"
+}
+yutto_danmaku() {
+    # Download danmaku from URL using yutto
+    local -r url="$1"
+    local -r output_dir="$2"
+    shift 2
+    _assert_no_params "$@"
+
+    local sessdata
+    if [[ -n "${YT_DLP_COOKIE+x}" ]] && [[ -f "$YT_DLP_COOKIE" ]]; then
+        sessdata="$(grep -P "^\.bilibili\.com\tTRUE\t\/\tTRUE\t[^\t]*\tSESSDATA\t" "$YT_DLP_COOKIE" | rev | cut -d$'\t' -f1 | rev)"
+    else
+        sessdata=""
+    fi
+    readonly sessdata
+
+    yutto --no-progress --dir "$output_dir" --batch --subpath-template "{bvid}_p{id}" --danmaku-only --danmaku-opacity 1 --sessdata "$sessdata" -- "$url"
+}
+
+extract_info_json() {
+    # Extract data from embed info.json
+    local -r embed_info_json_file="$1"
+    local -r temp_dir="$2"
+    local -r selector="$3"
+    shift 3
+    _assert_no_params "$@"
+
+    # First, find info.json attachment ID in the mkv file
+    local attachment_id
+    attachment_id="$(mkvmerge --identification-format json --identify "$embed_info_json_file" | jq --raw-output '.attachments[] | select(.file_name == "info.json") | .id')"
+    readonly attachment_id
+    if [[ -z "$attachment_id" ]]; then
+        echo "Error: Failed to find info.json attachment ID in $embed_info_json_file" >&2
+        return 1
+    fi
+
+    # Then, extract the info json file
+    mkvextract attachments "$embed_info_json_file" "$attachment_id:$temp_dir/info.json" >/dev/null 0<&-
+
+    # Finally, extract data from the info json file
+    local data
+    data="$(jq --raw-output "$selector" "$temp_dir/info.json")"
+    readonly data
+    if [[ -z "$data" ]]; then
+        echo "Error: Failed to find $selector in info.json attachment" >&2
+        return 1
+    fi
+    echo "$data"
+}
+
+danmaku_xml_to_ass() {
+    # Convert danmaku xml file to ass format
+    local -r danmaku_xml_file="$1"
+    local -r danmaku_ass_file="$2"
+    shift 2
+    _assert_no_params "$@"
+
+    DanmakuFactory --fontsize 45 --opacity 255 --outline 1 --output "$danmaku_ass_file" -i "$danmaku_xml_file" >/dev/null 0<&-
+}
+
+embed_danmaku() {
+    # Embed danmaku into video file as soft subtitles
+    local -r video_file="$1"
+    local -r tmp_file="$2"
+    shift 2
+
+    local -a ffmpeg_input_args=()
+    local -a ffmpeg_args=()
+    local input_idx=0
+    for danmaku_file in "$@"; do
+        ffmpeg_input_args+=("-i" "$danmaku_file")
+        ffmpeg_args+=("-map" "$input_idx")
+        ffmpeg_args+=("-metadata:s:$input_idx" "language=zho")
+        ffmpeg_args+=("-metadata:s:$input_idx" "title=Danmaku")
+        input_idx=$((input_idx + 1))
+    done
+    ffmpeg_input_args+=("-i" "$video_file")
+    ffmpeg_args+=("-map" "$input_idx")
+    readonly ffmpeg_input_args
+    readonly ffmpeg_args
+    unset input_idx
+
+    ffmpeg_wrapper "${ffmpeg_input_args[@]}" "${ffmpeg_args[@]}" -c copy -map_metadata 0 "$tmp_file" && mv -- "$tmp_file" "$video_file"
+}
+
+if [[ -z "${YT_DLP_COOKIE+x}" ]]; then
+    YT_DLP_COOKIE="${XDG_DATA_HOME:-$HOME/.local/share}/youtube-dl/cookies.txt"
+fi
+if [[ ! -f "$YT_DLP_COOKIE" ]]; then
+    echo "Warning: Cookies file $YT_DLP_COOKIE not found" >&2
+fi
+
+if [[ -z "${AUDIO_ENCODING_PARAMS+x}" ]]; then
+    AUDIO_ENCODING_PARAMS="-metadata:s:a ENCODER_OPTIONS=\"-b:a 128k -vbr on -compression_level 10 -frame_duration 60 -packet_loss 0 -application audio\" -metadata:s:a ENCODER=\"libopus from ffmpeg via yt-dlpp\" -map_metadata 0 -c:v copy -c:a libopus -b:a 128k -compression_level 10 -vbr on -compression_level 10 -frame_duration 60 -packet_loss 0 -application audio"
+fi
+
+mode="download"
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+    -d | --download)
+        mode="download"
+        shift
+        ;;
+    -a | --audio)
+        mode="audio"
+        shift
+        ;;
+    -v | --update-video)
+        mode="update_video"
+        shift
+        ;;
+    -u | --update-danmaku)
+        mode="update_danmaku"
+        shift
+        ;;
+    -h | --help)
+        usage
+        exit 0
+        ;;
+    --)
+        shift
+        break
+        ;;
+    *)
+        break
+        ;;
+    esac
+done
+readonly mode
+if [[ $# -lt 1 ]]; then
+    usage
+    exit 1
+fi
+readonly url_or_path="$1"
+shift
+
+tmp_dir="$(mktemp -d)"
+readonly tmp_dir
+chmod go-rwx "$tmp_dir"
+trap 'rm -rf "$tmp_dir"' EXIT
+
+download_mode() {
+    local -r url="$1"
+    local -r dir="$2"
+    shift 2
+    _assert_no_params "$@"
+
+    local -r download_tmp_dir="$tmp_dir/download"
+    mkdir -p "$download_tmp_dir"
+    mkdir -p "$download_tmp_dir/video"
+    mkdir -p "$download_tmp_dir/danmaku"
+
+    echo "> Downloading $url"
+    ytdlp_video "$url" "$download_tmp_dir/video"
+
+    {
+        if is_true "${USE_YUTTO-yes}" && command -v yutto >/dev/null 2>&1; then
+            echo "> Downloading danmaku using yutto"
+            yutto_danmaku "$url" "$download_tmp_dir/danmaku"
+        else
+            echo "> Downloading danmaku using yt-dlp"
+            OUTPUT_FILENAME="%(id)s.%(ext)s" ytdlp_danmaku "$url" "$download_tmp_dir/danmaku"
+            while IFS= read -r -d $'\0' danmaku_file; do
+                echo "> Processing $danmaku_file" | print_with_indent
+                local -r ass_name="${danmaku_file%.*}.ass"
+                danmaku_xml_to_ass "$danmaku_file" "$ass_name"
+            done < <(find "$download_tmp_dir/danmaku" -type f -name "*.xml" -print0)
+        fi
+    } | print_with_indent
+
+    while IFS= read -r -d $'\0' mkv_file; do
+        local id
+        id="$(extract_info_json "$mkv_file" "$download_tmp_dir" ".id")"
+        readonly id
+        local -a danmaku_files=()
+        {
+            echo "> Finding danmaku for $mkv_file"
+            while IFS= read -r -d $'\0' danmaku_file; do
+                echo "> Will embed $danmaku_file" | print_with_indent
+                danmaku_files+=("$danmaku_file")
+            done < <(find "$download_tmp_dir/danmaku" -type f \( -name "${id}.ass" -or -name "${id}_p1.ass" \) -print0)
+            readonly danmaku_files
+
+            embed_danmaku "$mkv_file" "$download_tmp_dir/embed_danmaku_tmp.mkv" "${danmaku_files[@]}"
+        } | print_with_indent
+    done < <(find "$download_tmp_dir/video" -type f -name "*.mkv" -print0)
+
+    find "$download_tmp_dir/video" -type f -name "*.mkv" -exec mv --target-directory="$dir" {} +
+}
+
+audio_mode() {
+    local -r url="$1"
+    shift
+    _assert_no_params "$@"
+
+    echo "> Downloading $url"
+    {
+        ytdlp_audio "$url" "$tmp_dir"
+        find "$tmp_dir" -type f -name "*.opus" -exec mv -v --target-directory="." {} +
+    } | print_with_indent
+}
+
+update_danmaku_mode() {
+    local -r path="$1"
+    shift
+    _assert_no_params "$@"
+
+    get_non_danmaku_streams() {
+        local -r input_file="$1"
+        local -r temp_dir="$2"
+        shift 2
+        _assert_no_params "$@"
+
+        local streams_info
+        streams_info="$(ffprobe_wrapper -show_streams "$input_file")"
+        readonly streams_info
+
+        local -a map_args=()
+        for ((i = 0; i < "$(echo "$streams_info" | jq '.streams | length')"; i++)); do
+            local -r stream_type="$(echo "$streams_info" | jq -r ".streams[$i].codec_type")"
+            local -r stream_title="$(echo "$streams_info" | jq -r ".streams[$i].tags.title // unknown")"
+
+            # Skip subtitle streams with title=Danmaku
+            if [[ "$stream_type" == "subtitle" && "$stream_title" == "Danmaku" ]]; then
+                continue
+            fi
+
+            map_args+=("-map" "0:$i")
+        done
+
+        printf '%s\n' "${map_args[@]}"
+    }
+
+    if [[ ! -f "$path" ]]; then
+        echo "Error: Unable to find file $path" >&2
+        return 1
+    fi
+
+    local -r update_tmp_dir="$tmp_dir/update_danmaku"
+    mkdir -p "$update_tmp_dir"
+    mkdir -p "$update_tmp_dir/danmaku"
+
+    local size
+    size="$(filesize "$path")"
+    readonly size
+    echo "> Updating danmaku for file $path ($size)"
+
+    local -r web_url="$(extract_info_json "$path" "$update_tmp_dir" ".webpage_url")"
+    if [[ -z "$web_url" ]]; then
+        echo "Error: Failed to extract webpage_url from $path" >&2
+        return 1
+    fi
+    echo "> Extracted URL: $web_url" | print_with_indent
+
+    {
+        if is_true "${USE_YUTTO-yes}" && command -v yutto >/dev/null 2>&1; then
+            echo "> Downloading danmaku using yutto"
+            yutto_danmaku "$web_url" "$update_tmp_dir/danmaku"
+        else
+            echo "> Downloading danmaku using yt-dlp"
+            OUTPUT_FILENAME="'%(id)s.%(ext)s" ytdlp_danmaku "$web_url" "$update_tmp_dir/danmaku"
+            while IFS= read -r -d $'\0' danmaku_file; do
+                echo "> Processing $danmaku_file" | print_with_indent
+                local -r ass_name="${danmaku_file%.*}.ass"
+                danmaku_xml_to_ass "$danmaku_file" "$ass_name"
+            done < <(find "$update_tmp_dir/danmaku" -type f -name "*.xml" -print0)
+        fi
+    } | print_with_indent
+
+    local -r stripped_file="$update_tmp_dir/stripped.mkv"
+    {
+        # Get stream mapping that excludes only danmaku streams
+        local -a stream_maps
+        readarray -t stream_maps < <(get_non_danmaku_streams "$path" "$update_tmp_dir")
+        readonly stream_maps
+
+        if [[ ${#stream_maps[@]} -eq 0 ]]; then
+            echo "> Warning: No non-danmaku streams found, copying all streams"
+            ffmpeg_wrapper -i "$path" -c copy -map_metadata 0 "$stripped_file"
+        else
+            ffmpeg_wrapper -i "$path" "${stream_maps[@]}" -c copy -map_metadata 0 "$stripped_file"
+        fi
+    } | print_with_indent
+
+    echo "> Embedding fresh danmaku" | print_with_indent
+    {
+        local id
+        id="$(extract_info_json "$path" "$update_tmp_dir" ".id")"
+        readonly id
+        local -a danmaku_files=()
+
+        while IFS= read -r -d $'\0' danmaku_file; do
+            echo "> Will embed $danmaku_file" | print_with_indent
+            danmaku_files+=("$danmaku_file")
+        done < <(find "$update_tmp_dir/danmaku" -type f \( -name "${id}.ass" -or -name "${id}_p1.ass" \) -print0)
+        readonly danmaku_files
+
+        embed_danmaku "$stripped_file" "$update_tmp_dir/embed_danmaku_tmp.mkv" "${danmaku_files[@]}"
+        mv -- "$stripped_file" "$path"
+    } | print_with_indent
+
+    echo "> Danmaku update complete. Size: $size -> $(filesize "$path")" | print_with_indent
+}
+
+update_video_mode() {
+    local -r path="$1"
+    shift
+    _assert_no_params "$@"
+
+    local -r update_tmp_dir="$tmp_dir/update"
+    mkdir -p "$update_tmp_dir"
+
+    if [[ ! -f "$path" ]]; then
+        echo "Error: Unable to find file $path" >&2
+        return 1
+    fi
+
+    local size
+    size="$(filesize "$path")"
+    readonly size
+    echo "> Extracting URL from file $path ($size)"
+
+    local web_url
+    web_url="$(extract_info_json "$path" "$update_tmp_dir" ".webpage_url")"
+    readonly web_url
+    if [[ -z "$web_url" ]]; then
+        echo "Error: Failed to extract url from $path" >&2
+        return 1
+    fi
+    echo "> Extracted URL: $web_url" | print_with_indent
+
+    download_mode "$web_url" "$(dirname "$path")" || return $?
+    echo "> Updated. Size: $size -> $(filesize "$path")" | print_with_indent
+}
+
+case "$mode" in
+download)
+    with_retry 5 download_mode "$url_or_path" "${1:-.}"
+    ;;
+audio)
+    if [[ $# -gt 0 ]]; then
+        usage
+        exit 1
+    fi
+    with_retry 5 audio_mode "$url_or_path"
+    ;;
+update_video)
+    if [[ $# -gt 0 ]]; then
+        usage
+        exit 1
+    fi
+    with_retry 5 update_video_mode "$url_or_path"
+    ;;
+update_danmaku)
+    if [[ $# -gt 0 ]]; then
+        usage
+        exit 1
+    fi
+    with_retry 5 update_danmaku_mode "$url_or_path"
+    ;;
+*)
+    if [[ -n "$mode" ]]; then
+        usage
+        exit 1
+    fi
+    _raise_fatal_error "Unknown mode $mode"
+    ;;
+esac
