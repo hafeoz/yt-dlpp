@@ -54,7 +54,7 @@ is_true() {
 usage() {
     local exitcode=0
     if [[ "$#" -ne 0 ]]; then
-        local exitcode=64
+        exitcode=64
         echo "Error: $*"
     fi
     readonly exitcode
@@ -198,11 +198,9 @@ yutto_danmaku() {
     shift 2
     _assert_no_params "$@"
 
-    local sessdata
+    local sessdata=""
     if [[ -n "${YT_DLP_COOKIE+x}" ]] && [[ -f "$YT_DLP_COOKIE" ]]; then
         sessdata="$(grep -P "^\.bilibili\.com\tTRUE\t\/\tTRUE\t[^\t]*\tSESSDATA\t" "$YT_DLP_COOKIE" | rev | cut -d$'\t' -f1 | rev)"
-    else
-        sessdata=""
     fi
     readonly sessdata
 
@@ -385,6 +383,7 @@ update_danmaku_mode() {
 
             map_args+=("-map" "0:$i")
         done
+        readonly map_args
 
         printf '%s\n' "${map_args[@]}"
     }
@@ -403,7 +402,9 @@ update_danmaku_mode() {
     readonly size
     echo "> Updating danmaku for file $path ($size)"
 
-    local -r web_url="$(extract_info_json "$path" "$update_tmp_dir" ".webpage_url")"
+    local web_url
+    web_url="$(extract_info_json "$path" "$update_tmp_dir" ".webpage_url")"
+    readonly web_url
     if [[ -z "$web_url" ]]; then
         echo "Error: Failed to extract webpage_url from $path" >&2
         return 1
