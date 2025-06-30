@@ -416,7 +416,7 @@ update_danmaku_mode() {
             yutto_danmaku "$web_url" "$update_tmp_dir/danmaku"
         else
             echo "> Downloading danmaku using yt-dlp"
-            OUTPUT_FILENAME="'%(id)s.%(ext)s" ytdlp_danmaku "$web_url" "$update_tmp_dir/danmaku"
+            OUTPUT_FILENAME="%(id)s.%(ext)s" ytdlp_danmaku "$web_url" "$update_tmp_dir/danmaku"
             while IFS= read -r -d $'\0' danmaku_file; do
                 echo "> Processing $danmaku_file" | print_with_indent
                 local -r ass_name="${danmaku_file%.*}.ass"
