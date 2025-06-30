@@ -376,7 +376,7 @@ update_danmaku_mode() {
         local -a map_args=()
         for ((i = 0; i < "$(echo "$streams_info" | jq '.streams | length')"; i++)); do
             local -r stream_type="$(echo "$streams_info" | jq -r ".streams[$i].codec_type")"
-            local -r stream_title="$(echo "$streams_info" | jq -r ".streams[$i].tags.title // unknown")"
+            local -r stream_title="$(echo "$streams_info" | jq -r ".streams[$i].tags.title // empty")"
 
             # Skip subtitle streams with title=Danmaku
             if [[ "$stream_type" == "subtitle" && "$stream_title" == "Danmaku" ]]; then
