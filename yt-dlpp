@@ -335,7 +335,7 @@ download_mode() {
             while IFS= read -r -d $'\0' danmaku_file; do
                 echo "> Will embed $danmaku_file" | print_with_indent
                 danmaku_files+=("$danmaku_file")
-            done < <(find "$download_tmp_dir/danmaku" -type f \( -name "${id}.ass" -or -name "${id}_p1.ass" \) -print0)
+            done < <(find "$download_tmp_dir/danmaku" -type f \( -name "${id}.ass" -or -name "${id}_p1.ass" -or -name "${id}.danmaku.ass" -or -name "${id}_p1.danmaku.ass" \) -print0)
             readonly danmaku_files
 
             embed_danmaku "$mkv_file" "$download_tmp_dir/embed_danmaku_tmp.mkv" "${danmaku_files[@]}"
