@@ -21,7 +21,7 @@ _get_stack() {
     for ((bt = 1; bt < stack_size; bt++)); do
         local func="${FUNCNAME[$bt]}"
         [[ $func = "" ]] && func=MAIN
-        local -r linen="${BASH_LINENO[$((bt - 1))]}"
+        local linen="${BASH_LINENO[$((bt - 1))]}"
         local src="${BASH_SOURCE[$bt]}"
         [[ "$src" = "" ]] && src=non_file_source
 
@@ -319,7 +319,7 @@ download_mode() {
             OUTPUT_FILENAME="%(id)s.%(ext)s" ytdlp_danmaku "$url" "$download_tmp_dir/danmaku"
             while IFS= read -r -d $'\0' danmaku_file; do
                 echo "> Processing $danmaku_file" | print_with_indent
-                local -r ass_name="${danmaku_file%.*}.ass"
+                local ass_name="${danmaku_file%.*}.ass"
                 danmaku_xml_to_ass "$danmaku_file" "$ass_name"
             done < <(find "$download_tmp_dir/danmaku" -type f -name "*.xml" -print0)
         fi
@@ -328,7 +328,6 @@ download_mode() {
     while IFS= read -r -d $'\0' mkv_file; do
         local id
         id="$(extract_info_json "$mkv_file" "$download_tmp_dir" ".id")"
-        readonly id
         local -a danmaku_files=()
         {
             echo "> Finding danmaku for $mkv_file"
@@ -336,7 +335,6 @@ download_mode() {
                 echo "> Will embed $danmaku_file" | print_with_indent
                 danmaku_files+=("$danmaku_file")
             done < <(find "$download_tmp_dir/danmaku" -type f \( -name "${id}.ass" -or -name "${id}_p1.ass" -or -name "${id}.danmaku.ass" -or -name "${id}_p1.danmaku.ass" \) -print0)
-            readonly danmaku_files
 
             embed_danmaku "$mkv_file" "$download_tmp_dir/embed_danmaku_tmp.mkv" "${danmaku_files[@]}"
         } | print_with_indent
@@ -375,8 +373,10 @@ update_danmaku_mode() {
 
         local -a map_args=()
         for ((i = 0; i < "$(echo "$streams_info" | jq '.streams | length')"; i++)); do
-            local -r stream_type="$(echo "$streams_info" | jq -r ".streams[$i].codec_type")"
-            local -r stream_title="$(echo "$streams_info" | jq -r ".streams[$i].tags.title // empty")"
+            local stream_type
+            stream_type="$(echo "$streams_info" | jq -r ".streams[$i].codec_type")"
+            local stream_title
+            stream_title="$(echo "$streams_info" | jq -r ".streams[$i].tags.title // empty")"
 
             # Skip subtitle streams with title=Danmaku
             if [[ "$stream_type" == "subtitle" && "$stream_title" == "Danmaku" ]]; then
@@ -419,7 +419,7 @@ update_danmaku_mode() {
             OUTPUT_FILENAME="%(id)s.%(ext)s" ytdlp_danmaku "$web_url" "$update_tmp_dir/danmaku"
             while IFS= read -r -d $'\0' danmaku_file; do
                 echo "> Processing $danmaku_file" | print_with_indent
-                local -r ass_name="${danmaku_file%.*}.ass"
+                local ass_name="${danmaku_file%.*}.ass"
                 danmaku_xml_to_ass "$danmaku_file" "$ass_name"
             done < <(find "$update_tmp_dir/danmaku" -type f -name "*.xml" -print0)
         fi
