@@ -111,8 +111,10 @@ with_retry() {
                 exit "$last_errcode"
             fi
             attempt=$((attempt + 1))
-            echo "Warning: command exits with code $last_errcode. Retrying in $backoff (attempt $attempt out of $max_attempts)" >&2
-            sleep "$backoff"
+            if [[ "$attempt" -le "$max_attempts" ]]; then
+                echo "Warning: command exits with code $last_errcode. Retrying in $backoff (attempt $attempt out of $max_attempts)" >&2
+                sleep "$backoff"
+            fi
         fi
     done
     return "$last_errcode"
