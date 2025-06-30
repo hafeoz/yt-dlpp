@@ -38,29 +38,29 @@ Following dependencies are required for the script to function properly:
 ### Basic Download
 
 ```bash
-# yt-dlpp URL [PATH]
-yt-dlpp https://www.bilibili.com/video/BV1234567890
+# yt-dlpp d URL [PATH]
+yt-dlpp download https://www.bilibili.com/video/BV1234567890
 ```
 
 ### Audio Only
 
 ```bash
-# yt-dlpp -a URL
-yt-dlpp --audio https://music.163.com/song/123456
+# yt-dlpp a URL [PATH]
+yt-dlpp audio https://music.163.com/song/123456
 ```
 
 ### Re-download Existing Video
 
 ```bash
-# yt-dlpp -v PATH_TO_VIDEO_FILE
-yt-dlpp --update-video ./video.mkv
+# yt-dlpp v PATH
+yt-dlpp update-video ./video.mkv
 ```
 
 ### Refresh Danmaku
 
 ```bash
-# yt-dlpp -u PATH_TO_VIDEO_FILE
-yt-dlpp --update-danmaku ./video.mkv
+# yt-dlpp u PATH
+yt-dlpp update-danmaku ./video.mkv
 ```
 
 ### Environment Variables
@@ -85,7 +85,8 @@ export AUDIO_ENCODING_PARAMS="-b:a 192k -compression_level 8"
 export USE_YUTTO="no"
 
 # Custom retry settings
-export BACKOFF="2s"
+export RETRY_MAX_ATTEMPTS="5"
+export RETRY_BACKOFF="2s"
 ```
 
 ## License

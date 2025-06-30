@@ -54,14 +54,13 @@ is_true() {
 usage() {
     _assert_no_params "$@"
     cat <<EOF
-Usage: $(basename "$0") [COMMAND] URL [PATH]
+Usage: $(basename "$0") [COMMAND] [URL] [PATH]
 Commands:
-  -d, --download          (default) Download video or playlist from URL to PATH (default: current directory)
-  -a, --audio             Download audio from URL
-  -v, --update-video      Re-download video file
-  -u, --update-danmaku    Refresh video danmaku
-  -h, --help              Show this help message
-  --                      End of options
+  d, download          Download video or playlist from URL to PATH (default: current directory)
+  a, audio             Download audio from URL to PATH (default: current directory)
+  v, update-video      Re-download video file from PATH
+  u, update-danmaku    Refresh video danmaku from PATH
+  h, help              Show this help message
 
 Environment variables:
   YT_DLP_COOKIE           Path to cookies file (default: ~/.local/share/youtube-dl/cookies.txt)
@@ -70,8 +69,10 @@ Environment variables:
   USE_ARIA2               Use aria2c as external downloader (default: no)
   AUDIO_ENCODING_PARAMS   Additional arguments to pass to ffmpeg for audio encoding (default: libopus with 128kbps)
   USE_YUTTO               Use yutto to download danmaku (default: yes)
-  BACKOFF                 Retry backoff time (default: 1s)
+  RETRY_MAX_ATTEMPTS      Max retry attempts (default: 3)
+  RETRY_BACKOFF           Retry backoff time (default: 1s)
 EOF
+    exit 0
 }
 
 filesize() {
@@ -92,9 +93,8 @@ print_with_indent() {
 
 with_retry() {
     # Retry a command until it succeeds
-    local -r max_attempts="$1"
-    shift
-    local -r backoff="${BACKOFF-"1s"}"
+    local -r max_attempts="${RETRY_MAX_ATTEMPTS-3}"
+    local -r backoff="${RETRY_BACKOFF-"1s"}"
     local attempt=1
     while [[ $attempt -le "$max_attempts" ]]; do
         if "$@"; then return 0; fi
@@ -271,46 +271,6 @@ if [[ -z "${AUDIO_ENCODING_PARAMS+x}" ]]; then
     AUDIO_ENCODING_PARAMS="-metadata:s:a ENCODER_OPTIONS=\"-b:a 128k -vbr on -compression_level 10 -frame_duration 60 -packet_loss 0 -application audio\" -metadata:s:a ENCODER=\"libopus from ffmpeg via yt-dlpp\" -map_metadata 0 -c:v copy -c:a libopus -b:a 128k -compression_level 10 -vbr on -compression_level 10 -frame_duration 60 -packet_loss 0 -application audio"
 fi
 
-mode="download"
-while [[ $# -gt 0 ]]; do
-    case "$1" in
-    -d | --download)
-        mode="download"
-        shift
-        ;;
-    -a | --audio)
-        mode="audio"
-        shift
-        ;;
-    -v | --update-video)
-        mode="update_video"
-        shift
-        ;;
-    -u | --update-danmaku)
-        mode="update_danmaku"
-        shift
-        ;;
-    -h | --help)
-        usage
-        exit 0
-        ;;
-    --)
-        shift
-        break
-        ;;
-    *)
-        break
-        ;;
-    esac
-done
-readonly mode
-if [[ $# -lt 1 ]]; then
-    usage
-    exit 1
-fi
-readonly url_or_path="$1"
-shift
-
 tmp_dir="$(mktemp -d)"
 readonly tmp_dir
 chmod go-rwx "$tmp_dir"
@@ -367,13 +327,14 @@ download_mode() {
 
 audio_mode() {
     local -r url="$1"
-    shift
+    local -r dir="$2"
+    shift 2
     _assert_no_params "$@"
 
     echo "> Downloading $url"
     {
         ytdlp_audio "$url" "$tmp_dir"
-        find "$tmp_dir" -type f -name "*.opus" -exec mv -v --target-directory="." {} +
+        find "$tmp_dir" -type f -name "*.opus" -exec mv -v --target-directory="$dir" {} +
     } | print_with_indent
 }
 
@@ -510,36 +471,80 @@ update_video_mode() {
     echo "> Updated. Size: $size -> $(filesize "$path")" | print_with_indent
 }
 
-case "$mode" in
-download)
-    with_retry 5 download_mode "$url_or_path" "${1:-.}"
-    ;;
-audio)
-    if [[ $# -gt 0 ]]; then
+if ! is_true "${NO_RETRY-no}"; then
+    NO_RETRY=yes with_retry "$0" "$@"
+    exit "$?"
+fi
+
+if [[ "$#" -eq 0 ]]; then
+    usage
+fi
+
+command="$1"
+shift
+case "$command" in
+d | download)
+    if [[ "$#" -ge 1 ]]; then
+        readonly url="$1"
+        shift
+    else
         usage
-        exit 1
     fi
-    with_retry 5 audio_mode "$url_or_path"
-    ;;
-update_video)
-    if [[ $# -gt 0 ]]; then
+    if [[ "$#" -ge 1 ]]; then
+        readonly dir="$1"
+        shift
+    else
+        readonly dir="."
+    fi
+    if [[ "$#" -ge 1 ]]; then
         usage
-        exit 1
     fi
-    with_retry 5 update_video_mode "$url_or_path"
+
+    download_mode "$url" "$dir"
     ;;
-update_danmaku)
-    if [[ $# -gt 0 ]]; then
-        usage
-        exit 1
+a | audio)
+    if [[ "$#" -ge 1 ]]; then
+        readonly url="$1"
+        shift
     fi
-    with_retry 5 update_danmaku_mode "$url_or_path"
+    if [[ "$#" -ge 1 ]]; then
+        readonly dir="$1"
+        shift
+    else
+        readonly dir="."
+    fi
+    if [[ "$#" -ge 1 ]]; then
+        usage
+    fi
+
+    audio_mode "$url" "$dir"
+    ;;
+v | update-video)
+    if [[ "$#" -ge 1 ]]; then
+        readonly path="$1"
+        shift
+    fi
+    if [[ "$#" -ge 1 ]]; then
+        usage
+    fi
+
+    update_video_mode "$path"
+    ;;
+u | update-danmaku)
+    if [[ "$#" -ge 1 ]]; then
+        readonly path="$1"
+        shift
+    fi
+    if [[ "$#" -ge 1 ]]; then
+        usage
+    fi
+
+    update_danmaku_mode "$path"
+    ;;
+h | help)
+    usage
     ;;
 *)
-    if [[ -n "$mode" ]]; then
-        usage
-        exit 1
-    fi
-    _raise_fatal_error "Unknown mode $mode"
+    usage
     ;;
 esac
