@@ -273,6 +273,11 @@ embed_danmaku() {
     ffmpeg_wrapper "${ffmpeg_input_args[@]}" "${ffmpeg_args[@]}" -c copy -map_metadata 0 "$tmp_file" && mv -- "$tmp_file" "$video_file"
 }
 
+if ! is_true "${NO_RETRY-no}"; then
+    NO_RETRY=yes with_retry "$0" "$@"
+    exit "$?"
+fi
+
 if [[ -z "${YT_DLP_COOKIE+x}" ]]; then
     YT_DLP_COOKIE="${XDG_DATA_HOME:-$HOME/.local/share}/youtube-dl/cookies.txt"
 fi
@@ -484,11 +489,6 @@ update_video_mode() {
     echo "> Updated. Size: $size -> $(filesize "$path")" | print_with_indent
 }
 
-if ! is_true "${NO_RETRY-no}"; then
-    NO_RETRY=yes with_retry "$0" "$@"
-    exit "$?"
-fi
-
 if [[ "$#" -eq 0 ]]; then
     usage
 fi
@@ -497,68 +497,44 @@ command="$1"
 shift
 case "$command" in
 d | download)
-    if [[ "$#" -ge 1 ]]; then
-        readonly url="$1"
-        shift
-    else
+    if [[ "$#" -eq 0 ]]; then
         usage "URL is required for download mode"
     fi
-    if [[ "$#" -ge 1 ]]; then
-        readonly dir="$1"
-        shift
-    else
-        readonly dir="."
-    fi
-    if [[ "$#" -ge 1 ]]; then
+    if [[ "$#" -gt 2 ]]; then
         usage "Too many arguments for download mode"
     fi
 
-    download_mode "$url" "$dir"
+    download_mode "$1" "${2-.}"
     ;;
 a | audio)
-    if [[ "$#" -ge 1 ]]; then
-        readonly url="$1"
-        shift
-    else
+    if [[ "$#" -eq 0 ]]; then
         usage "URL is required for audio mode"
     fi
-    if [[ "$#" -ge 1 ]]; then
-        readonly dir="$1"
-        shift
-    else
-        readonly dir="."
-    fi
-    if [[ "$#" -ge 1 ]]; then
+    if [[ "$#" -gt 2 ]]; then
         usage "Too many arguments for audio mode"
     fi
 
-    audio_mode "$url" "$dir"
+    audio_mode "$1" "${2-.}"
     ;;
 v | update-video)
-    if [[ "$#" -ge 1 ]]; then
-        readonly path="$1"
-        shift
-    else
+    if [[ "$#" -eq 0 ]]; then
         usage "Path is required for update-video mode"
     fi
-    if [[ "$#" -ge 1 ]]; then
+    if [[ "$#" -gt 1 ]]; then
         usage "Too many arguments for update-video mode"
     fi
 
-    update_video_mode "$path"
+    update_video_mode "$1"
     ;;
 u | update-danmaku)
-    if [[ "$#" -ge 1 ]]; then
-        readonly path="$1"
-        shift
-    else
+    if [[ "$#" -eq 0 ]]; then
         usage "Path is required for update-danmaku mode"
     fi
-    if [[ "$#" -ge 1 ]]; then
+    if [[ "$#" -gt 1 ]]; then
         usage "Too many arguments for update-danmaku mode"
     fi
 
-    update_danmaku_mode "$path"
+    update_danmaku_mode "$1"
     ;;
 h | help)
     usage
